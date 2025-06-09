@@ -1,3 +1,5 @@
+import base64
+
 from fastapi import FastAPI,HTTPException, Depends
 from database import fetch_chat_history, store_message, update_user_order_mappings, get_shipments_by_user, \
     store_message_metadata, archive_user_data, archive_processed_orders_data
@@ -7,7 +9,8 @@ from typing import List, Dict, Any, Union
 import json
 from datetime import datetime,timedelta
 from fastapi.middleware.cors import CORSMiddleware
-import uuid
+import io
+from PyPDF2 import PdfMerger
 
 from uniwareService import make_unicommerce_request, simplify_channels, simplify_warehouses
 
@@ -115,8 +118,8 @@ async def chat(
     
     5. CHANNEL RESOLUTION:
     
-         1. Identify ALL channels sharing the sourceCode/channelName
-         2. After identifying all channels with matching names and/or sourceCode from [System feed], list these options to user IF there are mutiple channels else take the channel as is.
+         1. Match ALL channels sharing the sourceCode/channelName
+         2. After matching all channels with matching names and/or sourceCode from [System feed], list these options to user IF there are mutiple channels else take the channel as is.
          3. You should only show list of channel name to user. Keep the matching of channelCode and/or sourceCode internal only.
          4. You can match these names and code case-insensitive internally.
          5. Further, when seller lists only one channel name or code, try to find the nearest exact match for channelName.
@@ -172,7 +175,10 @@ async def chat(
        - Avoid processing any other ENTITY than ORDER and PICKLIST
        
     11. RESPONSE FORMATTING: 
-       - Always use Markdown-style formatting with **bold**, *italics*, and line breaks.
+        - Always format list-like content as proper lists, not inline text.
+        - Apply **bold** and _italics_ for emphasis.
+        - Include line breaks between list items and sections.
+        - Structure content cleanly for optimal chat UI rendering.
 """,
     temperature: float = 0.2,
 ):
@@ -224,21 +230,27 @@ async def chat(
             followup_message = f"[System Feed] Order validation status: {order_validation_result}. Confirm the count to user before processing"
             store_message(user_id, followup_message, "user", metadata={"order_validation": order_validation_result})
             formatted_history.append({"role": "user", "parts": [followup_message]})
+            gemini_response_to_user = send_message_gemini(model_name, formatted_history, system_instruction)
+            store_message(user_id, gemini_response_to_user, "user")
+            return ChatResponse(response=gemini_response_to_user, type="text")
 
         if response_json.get("action") == "PROCESS":
-            order_process_result = process_order(response_json)
+            order_process_result,pdf_base_64 = process_order(response_json)
             followup_message = f"[System Feed] Order Process status: {order_process_result}. Please provide an appropriate response to the user."
             store_message(user_id, followup_message, "user", metadata={"order_process": order_process_result})
             archive_user_data(get_user_id(),False)
             formatted_history.append({"role": "user", "parts": [followup_message]})
+            gemini_response_to_user = send_message_gemini(model_name, formatted_history, system_instruction)
+            store_message(user_id, gemini_response_to_user, "user")
+            if pdf_base_64 != "":
+                return ChatResponse(response=pdf_base_64, type="pdf")
+            else:
+                return ChatResponse(response=gemini_response_to_user, type="text")
 
-
-        gemini_response_to_user = send_message_gemini(model_name, formatted_history, system_instruction)
-        store_message(user_id, gemini_response_to_user, "user")
-        return ChatResponse(response=gemini_response_to_user)
+        return ChatResponse(response="invalid action", type="text")
 
     except json.JSONDecodeError:
-        return ChatResponse(response=gemini_response) # Return the string
+        return ChatResponse(response=gemini_response,type="text") # Return the string
 
 
 @app.post("/chat/initiate")
@@ -499,12 +511,13 @@ def extract_orders_response(response_data, column_names, extract_fields) ->list:
 
 
 
-def process_order(order_details: dict) -> str:
+def process_order(order_details: dict) -> tuple[str, str]:
     """
     Simulates validating an order with an external system.
     Replace this with your actual order validation logic.
     """
     process_order_response = ""
+    combined_returned_pdf = ""
     orders = get_shipments_by_user(get_user_id())
 
     invoice_success_shipments = []
@@ -527,8 +540,8 @@ def process_order(order_details: dict) -> str:
 
         if print_invoices_labels_response.status_code == 200 and "application/pdf" in print_invoices_labels_response.headers.get("Content-Type") :
             file_path = save_pdf_to_temp(print_invoices_labels_response.content,"hoadstaging",get_user_id(),"invoice_label")
+            combined_returned_pdf = base64.b64encode(print_invoices_labels_response.content).decode('utf-8')
             process_order_response = f"Successfully generated invoices , Link to combined pdf : {file_path}"
-
 
 
     if print_invoices:
@@ -538,7 +551,9 @@ def process_order(order_details: dict) -> str:
         print_invoice_response = make_unicommerce_request("/data/oms/invoice/show/bulk","POST",print_invoice_request)
         if print_invoice_response.status_code == 200 and "application/pdf" in print_invoice_response.headers.get("Content-Type") :
             invoice_file_path = save_pdf_to_temp(print_invoice_response.content,"hoadstaging",get_user_id(),"invoice")
-            process_order_response = f"Successfully generated invoices , Link to combined pdf : {invoice_file_path}"
+            invoice_encoded = base64.b64encode(print_invoice_response.content).decode('utf-8')
+            process_order_response = f"Successfully generated invoices "
+
             for order in orders:
                 process_label_for_order_response = process_label_for_order(order,print_labels,label_success_shipments,label_failed_shipments)
             print_label_request = {
@@ -546,15 +561,37 @@ def process_order(order_details: dict) -> str:
             }
             print_labels_response = make_unicommerce_request("/data/oms/shipment/show/bulk","POST",print_label_request)
             if print_labels_response.status_code == 200 and "application/pdf" in print_labels_response.headers.get("Content-Type"):
+                label_encoded = base64.b64encode(print_labels_response.content).decode('utf-8')
                 label_file_path = save_pdf_to_temp(print_labels_response.content, "hoadstaging", get_user_id(),"label")
-                process_order_response = f"{process_order_response} ,Successfully generated label , Link to combined pdf : {label_file_path}"
+                combined_returned_pdf = merge_pdfs_base64(invoice_encoded,label_encoded)
+                process_order_response = f"{process_order_response} ,Successfully generated label "
             else:
-                process_order_response = f"{process_order_response}, But label generation failure , thus not file path"
+                combined_returned_pdf = invoice_encoded
+                process_order_response = f"{process_order_response}, But label generation failure , thus not label file but invoice only"
         else:
             process_order_response= f"Unable to process orders at the time due to internal error"
 
 
-    return process_order_response
+    return process_order_response,combined_returned_pdf
+
+
+def merge_pdfs_base64(encoded_invoice: str, encoded_label: str) -> str:
+    # Decode base64 strings to binary PDF content
+    invoice_pdf = base64.b64decode(encoded_invoice)
+    label_pdf = base64.b64decode(encoded_label)
+
+    # Use BytesIO to handle in-memory binary streams
+    merger = PdfMerger()
+    merger.append(io.BytesIO(invoice_pdf))
+    merger.append(io.BytesIO(label_pdf))
+
+    output = io.BytesIO()
+    merger.write(output)
+    merger.close()
+
+    # Encode merged PDF to base64
+    merged_base64 = base64.b64encode(output.getvalue()).decode('utf-8')
+    return merged_base64
 
 def process_invoice_for_order(order,print_invoices_labels,
     print_invoices,

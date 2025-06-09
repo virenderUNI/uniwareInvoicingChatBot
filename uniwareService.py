@@ -5,7 +5,7 @@ from typing import Dict, Any
 BASE_URL = "https://hoadstaging.unicommerce.com"
 
 COOKIES = {
-    'JSESSIONID':'A7C29A5FB8BED263714ABB48850B1BB0;'
+    'JSESSIONID':'16A421AD40D3C22E8EF78CF72AB279AE;'
 }
 
 HEADERS = {

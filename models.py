@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List, Dict, Optional
+from typing import List, Dict
 
 class Message(BaseModel):
     role: str
@@ -10,3 +10,4 @@ class ChatHistory(BaseModel):
 
 class ChatResponse(BaseModel):
     response: str
+    type: str

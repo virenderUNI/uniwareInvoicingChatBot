@@ -11,3 +11,15 @@ class ChatHistory(BaseModel):
 class ChatResponse(BaseModel):
     response: str
     type: str
+
+# Pydantic model for login request body
+class LoginRequest(BaseModel):
+    tenantCode: str
+    username: str
+    password: str
+
+class ChatSessionRequest(BaseModel):
+    tenantCode: str
+    username: str
+    JSessionId: str
+

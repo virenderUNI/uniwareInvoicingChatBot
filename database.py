@@ -16,7 +16,7 @@ def get_collection(database):
     """Returns the MongoDB collection for chat history."""
     return database[COLLECTION_NAME]
 
-def fetch_chat_history(user_id: str) -> Dict:
+def fetch_chat_history(user_id: str,session_id: str) -> Dict:
     """
     Fetches the chat history from MongoDB for a given user.
     ... (rest of your fetch_chat_history function)
@@ -24,12 +24,24 @@ def fetch_chat_history(user_id: str) -> Dict:
     client = get_mongo_client()
     db = get_database(client)
     collection = get_collection(db)
-    history = collection.find_one({"user_id": user_id})
+    history = collection.find_one({"user_id": user_id,"session_id":session_id})
     client.close()
-    return history
+    return history or {}
+
+
+def fetch_archived_chat_history(user_id: str,session_id: str) -> Dict:
+    """
+    Fetches the chat history from MongoDB for a given user.
+    ... (rest of your fetch_chat_history function)
+    """
+    client = get_mongo_client()
+    db = get_database(client)
+    collection = db["archived_chat_history"]
+    history = collection.find_one({"user_id": user_id,"session_id":session_id})
+    client.close()
+    return history or {}
 
 def store_user_context(user_id: str, message: str, role: str, metadata: Optional[dict] = None):
-
 
     client = get_mongo_client()
     db = get_database(client)
@@ -54,8 +66,7 @@ def store_user_context(user_id: str, message: str, role: str, metadata: Optional
 
     client.close()
 
-def store_message_metadata(user_id: str, message: str, role: str, metadata: Optional[dict] = None):
-
+def store_message_metadata(user_id: str,session_id:str, message: str, role: str, metadata: Optional[dict] = None):
 
     client = get_mongo_client()
     db = get_database(client)
@@ -70,19 +81,32 @@ def store_message_metadata(user_id: str, message: str, role: str, metadata: Opti
 
     # Upsert the document and push the new message to the messages array
     collection.update_one(
-        {"user_id": user_id},
+        {"user_id": user_id, "session_id": session_id},
         {
             "$push": {"messages_metadata": message_data},
-            "$setOnInsert": {"user_id": user_id}
+                        "$setOnInsert": {
+                "user_id": user_id,
+                "session_id": session_id
+            }
         },
         upsert=True
     )
 
     client.close()
 
+def clear_message_metadata(user_id: str, session_id: str):
+    client = get_mongo_client()
+    db = get_database(client)
+    collection = get_collection(db)
 
-def store_message(user_id: str, message: str, role: str, metadata: Optional[dict] = None):
+    collection.update_one(
+        {"user_id": user_id, "session_id": session_id},
+        {"$set": {"messages_metadata": []}}
+    )
 
+    client.close()
+
+def store_message(user_id: str, session_id: str, message: str, role: str, metadata: Optional[dict] = None):
     client = get_mongo_client()
     db = get_database(client)
     collection = get_collection(db)
@@ -94,12 +118,14 @@ def store_message(user_id: str, message: str, role: str, metadata: Optional[dict
         "metadata": metadata,
     }
 
-    # Upsert the document and push the new message to the messages array
     collection.update_one(
-        {"user_id": user_id},
+        {"user_id": user_id, "session_id": session_id},
         {
             "$push": {"messages": message_data},
-            "$setOnInsert": {"user_id": user_id}
+            "$setOnInsert": {
+                "user_id": user_id,
+                "session_id": session_id
+            }
         },
         upsert=True
     )
@@ -109,6 +135,7 @@ def store_message(user_id: str, message: str, role: str, metadata: Optional[dict
 
 def update_user_order_mappings(
         user_id: str,
+        session_id: str,
         new_orders: List[Dict],
 ) -> None:
 
@@ -124,13 +151,13 @@ def update_user_order_mappings(
     }
 
     collection.update_one(
-        {"user_id": user_id},
+        {"user_id": user_id,"session_id":session_id},
         update_data,
     )
     client.close()
 
 
-def archive_processed_orders_data(user_id: str):
+def archive_processed_orders_data(user_id: str,session_id: str):
     client = get_mongo_client()
     db = get_database(client)
 
@@ -138,7 +165,7 @@ def archive_processed_orders_data(user_id: str):
     archive_collection = db["archived_chat_history"]
 
     # Fetch current user document
-    document = source_collection.find_one({"user_id": user_id})
+    document = source_collection.find_one({"user_id": user_id,"session_id": session_id})
     if not document:
         client.close()
         return
@@ -153,13 +180,13 @@ def archive_processed_orders_data(user_id: str):
 
     if archive_update:
         archive_collection.update_one(
-            {"user_id": user_id},
+            {"user_id": user_id,"session_id": session_id},
             archive_update,
             upsert=True
         )
 
     source_collection.update_one(
-        {"user_id": user_id},
+        {"user_id": user_id,"session_id":session_id},
         {
             "$set": {
                 "process_orders_data": [],
@@ -169,7 +196,7 @@ def archive_processed_orders_data(user_id: str):
 
     client.close()
 
-def archive_user_data(user_id: str,is_initialisation: bool):
+def archive_user_data(user_id: str,session_id: str,is_initialisation: bool):
     client = get_mongo_client()
     db = get_database(client)
 
@@ -177,7 +204,7 @@ def archive_user_data(user_id: str,is_initialisation: bool):
     archive_collection = db["archived_chat_history"]
 
     # Fetch current user document
-    document = source_collection.find_one({"user_id": user_id})
+    document = source_collection.find_one({"user_id": user_id,"session_id":session_id})
     if not document:
         client.close()
         return
@@ -209,7 +236,7 @@ def archive_user_data(user_id: str,is_initialisation: bool):
 
     if archive_update:
         archive_collection.update_one(
-            {"user_id": user_id},
+            {"user_id": user_id,"session_id":session_id},
             archive_update,
             upsert=True
         )
@@ -219,7 +246,7 @@ def archive_user_data(user_id: str,is_initialisation: bool):
         orders_to_archive = []
 
     source_collection.update_one(
-        {"user_id": user_id},
+        {"user_id": user_id,"session_id":session_id},
         {
             "$set": {
                 "messages": messages_to_keep,
@@ -231,10 +258,9 @@ def archive_user_data(user_id: str,is_initialisation: bool):
 
     client.close()
 
-
-
 def get_shipments_by_user(
         user_id: str,
+        session_id: str
 ) -> List[Dict]:
 
     client = get_mongo_client()
@@ -242,7 +268,7 @@ def get_shipments_by_user(
     collection = get_collection(db)
     # Query MongoDB
     existing_chat = collection.find_one(
-        {"user_id": user_id}
+        {"user_id": user_id,"session_id":session_id}
     )
 
     user_order_data = existing_chat.get("process_orders_data")
@@ -250,3 +276,41 @@ def get_shipments_by_user(
         return []
 
     return user_order_data
+
+def create_chat_session_auth(
+    chat_session_id: str,
+    user_id: str,
+    tenant_code: str,
+    is_jsession: bool,
+    token: str,
+) -> None:
+    # Establish MongoDB client and connection
+    client = get_mongo_client()
+    db = get_database(client)
+    collection = db["chat_session_auth"]
+
+    # Define the new entry data
+    new_entry = {
+        "chat_session_id": chat_session_id,
+        "user_id": user_id,
+        "tenant_code": tenant_code,
+        "isJSession": is_jsession,
+        "token": token,
+    }
+
+    # Insert the new entry into the collection
+    collection.insert_one(new_entry)
+
+    # Close the MongoDB client connection
+    client.close()
+
+def fetch_chat_session_auth(chat_session_id: str) -> dict | None:
+    client = get_mongo_client()
+    db = get_database(client)
+    collection = db["chat_session_auth"]
+
+    try:
+        result = collection.find_one({"chat_session_id": chat_session_id})
+        return result
+    finally:
+        client.close()
